@@ -1,0 +1,102 @@
+# Docker Compose for Local Development
+# Simple setup without Kafka and Dapr
+# All core features work: due dates, priorities, tags, recurring tasks, reminders, search, filter, sort
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: todo-postgres
+    environment:
+      POSTGRES_USER: todouser
+      POSTGRES_PASSWORD: todopassword
+      POSTGRES_DB: tododb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todouser -d tododb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - todo-network
+
+  # Backend API (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: todo-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql://todouser:todopassword@postgres:5432/tododb?sslmode=disable
+      
+      # JWT Authentication
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-key-min-32-characters-long-change-in-production}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRATION_HOURS: 24
+      
+      # OpenAI (optional - for AI agent features)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4}
+      AGENT_TIMEOUT: ${AGENT_TIMEOUT:-30}
+      CONTEXT_WINDOW_SIZE: ${CONTEXT_WINDOW_SIZE:-20}
+      
+      # Feature Flags
+      ENABLE_REMINDERS: "true"
+      ENABLE_RECURRENCE: "true"
+      ENABLE_EVENT_SOURCING: "false"  # Disabled - no Kafka
+      
+      # Kafka (disabled)
+      KAFKA_BROKERS: ""
+      KAFKA_TOPIC_EVENTS: ""
+      
+      # Dapr (disabled)
+      DAPR_HTTP_ENDPOINT: ""
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - todo-network
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "python migrate.py && uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # Frontend Application (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8000
+    container_name: todo-frontend
+    environment:
+      # Backend API
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      
+      # Authentication
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-Kf9sP3xR7L2Qm8ZB6D0NwA1E5JH4CYaV}
+      BETTER_AUTH_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - todo-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  todo-network:
+    driver: bridge

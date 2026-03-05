@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from .todo import Todo
     from .conversation import Conversation
     from .tool_invocation import ToolInvocation
+    from .tag import Tag
 
 
 class User(SQLModel, table=True):
@@ -23,3 +24,4 @@ class User(SQLModel, table=True):
     todos: List["Todo"] = Relationship(back_populates="user")
     conversations: List["Conversation"] = Relationship(back_populates="user")
     tool_invocations: List["ToolInvocation"] = Relationship(back_populates="user")
+    tags: List["Tag"] = Relationship(back_populates="user")

@@ -18,30 +18,239 @@ services:
       retries: 5
     networks:
       - todo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # Backend API
+  # Zookeeper (required for Kafka coordination)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: todo-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 5
+      ZOOKEEPER_INIT_LIMIT: 10
+      SERVER_JVMFLAGS: "-Dzookeeper.serverCnxnSocket=org.apache.zookeeper.server.NettyServerCnxnFactory"
+    ports:
+      - "2181:2181"
+    networks:
+      - todo-network
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep Mode"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: todo-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # LISTENERS = what Kafka binds to inside the container
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      # ADVERTISED_LISTENERS = what clients receive after initial bootstrap
+      #   - PLAINTEXT://kafka:29092  → used by containers on todo-network (backend, dapr, kafka-ui)
+      #   - PLAINTEXT_HOST://localhost:9092 → used by host processes (local uvicorn, CLI tools)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_COMPRESSION_TYPE: gzip
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
+    networks:
+      - todo-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --list --bootstrap-server localhost:9092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Kafka UI for monitoring
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: todo-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: todo-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - todo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis for state management (required for Dapr)
+  redis:
+    image: redis:7-alpine
+    container_name: todo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - todo-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Backend API with Dapr
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: todo-backend
     environment:
+      # Database
       DATABASE_URL: postgresql://todouser:todopassword@postgres:5432/tododb?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET:-your-secret-key-here-min-32-characters}
+
+      # JWT Configuration
+      JWT_SECRET: Kf9sP3xR7L2Qm8ZB6D0NwA1E5JH4CYaV
       JWT_ALGORITHM: HS256
       JWT_EXPIRATION_HOURS: 24
+
+      # OpenAI Configuration
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4}
-      AGENT_TIMEOUT: ${AGENT_TIMEOUT:-30}
-      CONTEXT_WINDOW_SIZE: ${CONTEXT_WINDOW_SIZE:-20}
+      OPENAI_MODEL: gpt-4
+      AGENT_TIMEOUT: 30
+      CONTEXT_WINDOW_SIZE: 20
+
+      # Kafka Configuration (CRITICAL)
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_EVENTS: task-events
+      KAFKA_CONSUMER_GROUP: task-service-group
+      KAFKA_AUTO_OFFSET_RESET: earliest
+
+      # Event Sourcing (CRITICAL)
+      ENABLE_EVENT_SOURCING: "true"
+      ENABLE_REMINDERS: "true"
+      ENABLE_RECURRENCE: "true"
+
+      # Dapr Configuration (CRITICAL)
+      DAPR_HTTP_ENDPOINT: http://dapr:3500
+      DAPR_GRPC_ENDPOINT: http://dapr:50001
+      ENABLE_DAPR: "true"
+
+      # Logging
+      LOG_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+
     ports:
       - "8000:8000"
+
     depends_on:
       postgres:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    networks:
+      - todo-network
+
+    restart: unless-stopped
+
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+
+    command: >
+      sh -c "
+        echo 'Waiting for Kafka to be ready...' &&
+        sleep 10 &&
+        python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Dapr Sidecar for backend (for actors, state management, service invocation)
+  dapr:
+    image: daprio/dapr:latest
+    container_name: todo-dapr
+    command: >
+      ./daprd
+      -app-id todo-backend
+      -app-port 8000
+      -app-channel-address backend
+      -dapr-http-port 3500
+      -dapr-grpc-port 50001
+      -components-path /dapr/components
+      -log-level info
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    ports:
+      - "3500:3500"
+      - "50001:50001"
+    volumes:
+      - ./dapr/components:/dapr/components
     networks:
       - todo-network
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Frontend Application
   frontend:
@@ -65,6 +274,10 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  kafka_data:
+    driver: local
+  redis_data:
     driver: local
 
 networks:

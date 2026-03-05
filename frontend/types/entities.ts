@@ -12,6 +12,20 @@ export interface User {
 }
 
 /**
+ * Priority levels for tasks
+ */
+export type Priority = 'high' | 'medium' | 'low';
+
+/**
+ * Tag entity for categorizing tasks
+ */
+export interface Tag {
+  id: number;
+  name: string;
+  color: string;  // Hex color code (e.g., #3B82F6)
+}
+
+/**
  * Task entity representing a todo item
  */
 export interface Task {
@@ -20,6 +34,9 @@ export interface Task {
   description: string;     // Task description (optional, max 1000 chars, defaults to empty string)
   completed: boolean;      // Completion status (maps to is_completed in backend)
   user_id: string;         // Integer user ID from backend (converted to string)
+  due_date?: string;       // ISO 8601 timestamp (optional)
+  priority: Priority;      // Priority level: high, medium, low
+  tags?: Tag[];            // List of tags (optional)
   created_at: string;      // ISO 8601 timestamp
   updated_at: string;      // ISO 8601 timestamp
 }
@@ -37,6 +54,20 @@ export function isUser(obj: any): obj is User {
   );
 }
 
+export function isPriority(value: any): value is Priority {
+  return ['high', 'medium', 'low'].includes(value);
+}
+
+export function isTag(obj: any): obj is Tag {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    typeof obj.id === 'number' &&
+    typeof obj.name === 'string' &&
+    typeof obj.color === 'string'
+  );
+}
+
 export function isTask(obj: any): obj is Task {
   return (
     typeof obj === 'object' &&
@@ -47,6 +78,7 @@ export function isTask(obj: any): obj is Task {
     typeof obj.completed === 'boolean' &&
     typeof obj.user_id === 'string' &&
     typeof obj.created_at === 'string' &&
-    typeof obj.updated_at === 'string'
+    typeof obj.updated_at === 'string' &&
+    isPriority(obj.priority)
   );
 }

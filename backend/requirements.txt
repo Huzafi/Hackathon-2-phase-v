@@ -12,3 +12,7 @@ httpx==0.28.1
 openai==1.58.1
 git+https://github.com/openai/swarm.git
 email-validator==2.1.0
+aiokafka==0.11.0
+python-dateutil==2.9.0.post0
+dapr-ext-fastapi==1.14.0
+dapr==1.14.0

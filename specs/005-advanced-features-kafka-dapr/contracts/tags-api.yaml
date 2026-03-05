@@ -1,0 +1,485 @@
+# Tags API Contract
+
+**Version**: 1.0.0
+**Date**: 2026-02-23
+**Feature**: 005-advanced-features-kafka-dapr
+
+---
+
+## Overview
+
+This document defines the Tags API for managing user-defined tags used for task categorization. All endpoints require JWT authentication.
+
+---
+
+## Base URL
+
+```
+/api/tags
+```
+
+---
+
+## Authentication
+
+All endpoints require JWT token in Authorization header:
+
+```
+Authorization: Bearer <jwt_token>
+```
+
+---
+
+## Endpoints
+
+### List Tags
+
+**GET** `/api/tags`
+
+List all tags for the authenticated user.
+
+**Query Parameters**:
+- `page` (integer, optional): Page number (default: 1)
+- `limit` (integer, optional): Items per page (default: 50, max: 100)
+
+**Response** (200 OK):
+```json
+{
+  "tags": [
+    {
+      "id": 1,
+      "user_id": 1,
+      "name": "work",
+      "color": "#3B82F6",
+      "created_at": "2026-02-20T10:00:00Z",
+      "task_count": 5
+    },
+    {
+      "id": 5,
+      "user_id": 1,
+      "name": "urgent",
+      "color": "#EF4444",
+      "created_at": "2026-02-21T14:30:00Z",
+      "task_count": 3
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 2,
+    "total_pages": 1
+  }
+}
+```
+
+---
+
+### Get Tag
+
+**GET** `/api/tags/{tag_id}`
+
+Retrieve a specific tag with details.
+
+**Response** (200 OK):
+```json
+{
+  "id": 1,
+  "user_id": 1,
+  "name": "work",
+  "color": "#3B82F6",
+  "created_at": "2026-02-20T10:00:00Z",
+  "task_count": 5
+}
+```
+
+**Error Responses**:
+- 404 Not Found: Tag not found or doesn't belong to user
+- 401 Unauthorized: Missing or invalid JWT
+
+---
+
+### Create Tag
+
+**POST** `/api/tags`
+
+Create a new tag for the authenticated user.
+
+**Request Body**:
+```json
+{
+  "name": "personal",
+  "color": "#10B981"
+}
+```
+
+**Response** (201 Created):
+```json
+{
+  "id": 8,
+  "user_id": 1,
+  "name": "personal",
+  "color": "#10B981",
+  "created_at": "2026-02-23T10:00:00Z"
+}
+```
+
+**Error Responses**:
+- 400 Bad Request: Tag name already exists for user
+- 401 Unauthorized: Missing or invalid JWT
+- 422 Validation Error: Invalid name or color format
+
+---
+
+### Update Tag
+
+**PUT** `/api/tags/{tag_id}`
+
+Full update of a tag. Both name and color can be modified.
+
+**Request Body**:
+```json
+{
+  "name": "work-urgent",
+  "color": "#DC2626"
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 1,
+  "user_id": 1,
+  "name": "work-urgent",
+  "color": "#DC2626",
+  "created_at": "2026-02-20T10:00:00Z",
+  "updated_at": "2026-02-23T14:30:00Z"
+}
+```
+
+**Error Responses**:
+- 400 Bad Request: New name already exists for user
+- 404 Not Found: Tag not found
+- 401 Unauthorized: Missing or invalid JWT
+
+---
+
+### Partial Update Tag
+
+**PATCH** `/api/tags/{tag_id}`
+
+Partial update - only provided fields are modified.
+
+**Request Body** (example - update only color):
+```json
+{
+  "color": "#F59E0B"
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 1,
+  "user_id": 1,
+  "name": "work",
+  "color": "#F59E0B",
+  "created_at": "2026-02-20T10:00:00Z",
+  "updated_at": "2026-02-23T15:00:00Z"
+}
+```
+
+---
+
+### Delete Tag
+
+**DELETE** `/api/tags/{tag_id}`
+
+Delete a tag. This does not delete associated tasks, only removes the tag association.
+
+**Response** (204 No Content):
+No response body.
+
+**Error Responses**:
+- 404 Not Found: Tag not found
+- 401 Unauthorized: Missing or invalid JWT
+
+**Side Effects**:
+- All task-tag associations for this tag are removed
+- Tasks previously tagged with this tag remain intact
+
+---
+
+## Validation Rules
+
+### Name
+- Required
+- 1-50 characters
+- Allowed characters: alphanumeric, spaces, hyphens
+- Must be unique per user (case-insensitive)
+- Cannot be empty or whitespace only
+
+### Color
+- Required
+- Must be valid 6-digit hex color code
+- Format: #RRGGBB (e.g., #3B82F6)
+- Case-insensitive (#3B82F6 = #3b82f6)
+
+---
+
+## Color Palette Suggestions
+
+Provide users with predefined color options:
+
+```json
+{
+  "suggested_colors": [
+    {"name": "Blue", "hex": "#3B82F6"},
+    {"name": "Red", "hex": "#EF4444"},
+    {"name": "Green", "hex": "#10B981"},
+    {"name": "Amber", "hex": "#F59E0B"},
+    {"name": "Purple", "hex": "#8B5CF6"},
+    {"name": "Pink", "hex": "#EC4899"},
+    {"name": "Gray", "hex": "#6B7280"},
+    {"name": "Teal", "hex": "#14B8A6"}
+  ]
+}
+```
+
+---
+
+## Error Response Format
+
+```json
+{
+  "detail": "Tag name 'work' already exists",
+  "errors": [
+    {
+      "field": "name",
+      "message": "Tag name must be unique per user"
+    }
+  ]
+}
+```
+
+**Common Error Codes**:
+- 400 Bad Request: Duplicate tag name
+- 401 Unauthorized: Missing or invalid JWT
+- 403 Forbidden: Tag belongs to another user
+- 404 Not Found: Tag not found
+- 422 Validation Error: Schema validation failed
+
+---
+
+## Examples
+
+### Create Tag with Default Color
+
+```bash
+curl -X POST http://localhost:8000/api/tags \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "meetings"
+  }'
+```
+
+### Update Tag Color
+
+```bash
+curl -X PUT http://localhost:8000/api/tags/1 \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "work",
+    "color": "#DC2626"
+  }'
+```
+
+### Filter Tasks by Tag
+
+```bash
+curl -X GET "http://localhost:8000/api/tasks?tags=1" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+---
+
+## OpenAPI Schema
+
+```yaml
+paths:
+  /api/tags:
+    get:
+      summary: List all tags for user
+      tags:
+        - Tags
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagListResponse'
+    
+    post:
+      summary: Create a new tag
+      tags:
+        - Tags
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTagRequest'
+      responses:
+        '201':
+          description: Tag created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+  
+  /api/tags/{tag_id}:
+    get:
+      summary: Get a specific tag
+      tags:
+        - Tags
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+        '404':
+          description: Tag not found
+    
+    put:
+      summary: Update a tag
+      tags:
+        - Tags
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagRequest'
+      responses:
+        '200':
+          description: Tag updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+    
+    delete:
+      summary: Delete a tag
+      tags:
+        - Tags
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Tag deleted
+
+components:
+  schemas:
+    CreateTagRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          default: '#3B82F6'
+    
+    UpdateTagRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+    
+    Tag:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        name:
+          type: string
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+        created_at:
+          type: string
+          format: date-time
+        task_count:
+          type: integer
+          description: Number of tasks with this tag (computed)
+    
+    TagListResponse:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+```
+
+---
+
+## Next Steps
+
+1. Implement endpoint handlers in `backend/src/api/tags.py`
+2. Create Pydantic schemas in `backend/src/schemas/tag.py`
+3. Add SQLModel definition in `backend/src/models/tag.py`
+4. Add integration tests for tag endpoints
+5. Create tag management UI components in frontend

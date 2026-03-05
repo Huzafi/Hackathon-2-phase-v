@@ -4,10 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from contextlib import asynccontextmanager
 import time
 import logging
+import asyncio
 from .core.database import create_db_and_tables
-from .api import auth, todos, chat, conversations
+from .core.kafka import cleanup_kafka_clients
+from .core.dapr import cleanup_dapr_client
+from .services.event_consumer import get_event_consumer, cleanup_event_consumer
+from .api import auth, todos, chat, conversations, tags, recurrence, reminders, search
 
 
 # Configure logging
@@ -16,6 +21,79 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+# Background task for consuming events
+event_consumer_task = None
+
+
+async def consume_events_background():
+    """Background task to consume events from Kafka."""
+    consumer = get_event_consumer()
+    await consumer.start_consuming()
+
+
+async def retry_unprocessed_events_background():
+    """Background task to retry unprocessed events periodically."""
+    consumer = get_event_consumer()
+    while True:
+        try:
+            await asyncio.sleep(60)  # Run every 60 seconds
+            count = await consumer.retry_unprocessed_events()
+            if count > 0:
+                logger.info(f"Retried {count} unprocessed events")
+        except Exception as e:
+            logger.error(f"Error in retry background task: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager for startup and shutdown events."""
+    # Startup
+    logger.info("Starting Todo Backend API...")
+    create_db_and_tables()
+    logger.info("Database tables created successfully")
+    
+    # Start event consumer background task
+    global event_consumer_task
+    event_consumer_task = asyncio.create_task(consume_events_background())
+    logger.info("Event consumer background task started")
+    
+    # Start retry background task
+    retry_task = asyncio.create_task(retry_unprocessed_events_background())
+    logger.info("Retry background task started")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Todo Backend API...")
+    
+    # Stop event consumer
+    if event_consumer_task:
+        event_consumer_task.cancel()
+        try:
+            await event_consumer_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Stop retry task
+    retry_task.cancel()
+    try:
+        await retry_task
+    except asyncio.CancelledError:
+        pass
+    
+    # Cleanup Kafka clients
+    await cleanup_kafka_clients()
+    logger.info("Kafka clients disconnected")
+    
+    # Cleanup Dapr client
+    cleanup_dapr_client()
+    logger.info("Dapr client disconnected")
+    
+    # Cleanup event consumer
+    await cleanup_event_consumer()
+    logger.info("Event consumer cleanup complete")
 
 
 # Create FastAPI application
@@ -30,6 +108,7 @@ app = FastAPI(
     license_info={
         "name": "MIT",
     },
+    lifespan=lifespan,
 )
 
 
@@ -46,6 +125,10 @@ app.add_middleware(
 # Register routers
 app.include_router(auth.router)
 app.include_router(todos.router)
+app.include_router(tags.router)
+app.include_router(recurrence.router)
+app.include_router(reminders.router)
+app.include_router(search.router)
 app.include_router(chat.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
 
@@ -108,20 +191,33 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     )
 
 
-@app.on_event("startup")
-def on_startup():
-    """Create database tables on application startup."""
-    logger.info("Starting Todo Backend API...")
-    create_db_and_tables()
-    logger.info("Database tables created successfully")
-
-
 @app.get("/")
 def root():
-    """Root endpoint - health check."""
+    """Root endpoint."""
     return {
         "message": "Todo Backend API",
         "status": "running",
         "docs": "/docs",
         "redoc": "/redoc"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Docker and monitoring."""
+    from .core.kafka import get_producer, get_consumer
+    from .core.config import settings
+
+    kafka_status = "connected" if get_producer().is_connected else "disconnected"
+    consumer_status = "connected" if get_consumer().is_connected else "disconnected"
+    dapr_status = "enabled" if settings.enable_dapr else "disabled"
+
+    return {
+        "status": "healthy",
+        "services": {
+            "kafka_producer": kafka_status,
+            "kafka_consumer": consumer_status,
+            "dapr": dapr_status,
+            "event_sourcing": "enabled" if settings.enable_event_sourcing else "disabled",
+        }
     }

@@ -4,19 +4,25 @@
  * Tasks page with AI Chat Interface - manage tasks through natural language conversation
  */
 
-import { useState, useEffect } from 'react';
-import { getTasks } from '@/lib/api/tasks';
+import { useState, useEffect, useCallback } from 'react';
+import { getTasks, type TaskListResponse } from '@/lib/api/tasks';
+import { searchTasks } from '@/lib/api/search';
+import { getTags } from '@/lib/api/tags';
 import {
   sendMessage,
   getConversations,
   getConversation,
   deleteConversation,
 } from '@/lib/api/chat';
-import { Task } from '@/types/entities';
+import { Task, Tag, Priority } from '@/types/entities';
 import { Conversation, Message } from '@/types/chat';
 import { TaskList } from '@/components/tasks/TaskList';
 import { ChatWindow } from '@/components/chat/ChatWindow';
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
+import { TaskSearch } from '@/components/tasks/TaskSearch';
+import { TaskFilters, type TaskFilterState } from '@/components/tasks/TaskFilters';
+import { TaskSort, type SortBy, type SortOrder } from '@/components/tasks/TaskSort';
+import { useTaskSort } from '@/lib/hooks/useTaskSort';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ErrorMessage } from '@/components/ui/ErrorMessage';
 import { Button } from '@/components/ui/Button';
@@ -27,6 +33,26 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
   const [tasksError, setTasksError] = useState<string | null>(null);
+  
+  // Search and filter state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filters, setFilters] = useState<TaskFilterState>({
+    priority: null,
+    status: null,
+    tags: [],
+    dueDateFrom: '',
+    dueDateTo: '',
+  });
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: 50,
+    total: 0,
+    total_pages: 1,
+  });
+  
+  // Sort state (with localStorage persistence)
+  const { sort, onSortChange, isLoaded: isSortLoaded } = useTaskSort();
 
   // Conversation state
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -41,16 +67,63 @@ export default function TasksPage() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false);
 
-  // Fetch tasks
-  const fetchTasks = async () => {
+  // Fetch tags
+  const fetchTags = async () => {
     try {
-      const fetchedTasks = await getTasks();
-      setTasks(fetchedTasks);
-      setTasksError(null);
+      const response = await getTags();
+      setTags(response.tags);
     } catch (err: any) {
-      setTasksError(err.message || 'Failed to load tasks');
+      console.error('Failed to load tags:', err);
     }
   };
+
+  // Fetch tasks with search and filters
+  const fetchTasks = useCallback(async () => {
+    setIsLoadingTasks(true);
+    setTasksError(null);
+    
+    try {
+      // Build search parameters
+      const params = {
+        q: searchQuery || undefined,
+        priority: filters.priority || undefined,
+        status: filters.status || undefined,
+        tags: filters.tags.length > 0 ? filters.tags : undefined,
+        due_date_from: filters.dueDateFrom || undefined,
+        due_date_to: filters.dueDateTo || undefined,
+        sort_by: sort.sortBy,
+        sort_order: sort.sortOrder,
+        page: pagination.page,
+        limit: pagination.limit,
+      };
+      
+      // Use search API if there are filters, otherwise use regular getTasks
+      let result: TaskListResponse;
+      if (searchQuery || filters.priority || filters.status || filters.tags.length > 0 || filters.dueDateFrom || filters.dueDateTo) {
+        result = await searchTasks(params);
+      } else {
+        const tasksList = await getTasks();
+        result = {
+          tasks: tasksList,
+          total: tasksList.length,
+          page: 1,
+          limit: 50,
+          total_pages: 1,
+        };
+      }
+      
+      setTasks(result.tasks);
+      setPagination(prev => ({
+        ...prev,
+        total: result.total,
+        total_pages: result.total_pages,
+      }));
+    } catch (err: any) {
+      setTasksError(err.message || 'Failed to load tasks');
+    } finally {
+      setIsLoadingTasks(false);
+    }
+  }, [searchQuery, filters, sort, pagination.page, pagination.limit]);
 
   // Fetch conversations
   const fetchConversations = async () => {
@@ -93,11 +166,11 @@ export default function TasksPage() {
   useEffect(() => {
     const loadInitialData = async () => {
       setIsLoadingTasks(true);
-      await Promise.all([fetchTasks(), fetchConversations()]);
+      await Promise.all([fetchTasks(), fetchConversations(), fetchTags()]);
       setIsLoadingTasks(false);
     };
     loadInitialData();
-  }, []);
+  }, [fetchTasks]);
 
   // Handle send message
   const handleSendMessage = async (message: string) => {
@@ -177,6 +250,25 @@ export default function TasksPage() {
   const handleRefreshTasks = () => {
     fetchTasks();
   };
+
+  // Handle search change
+  const handleSearchChange = useCallback((query: string) => {
+    setSearchQuery(query);
+    setPagination(prev => ({ ...prev, page: 1 })); // Reset to first page
+  }, []);
+
+  // Handle filter change
+  const handleFilterChange = useCallback((newFilters: TaskFilterState) => {
+    setFilters(newFilters);
+    setPagination(prev => ({ ...prev, page: 1 })); // Reset to first page
+  }, []);
+
+  // Trigger search when query or filters change
+  useEffect(() => {
+    if (isSortLoaded) {
+      fetchTasks();
+    }
+  }, [searchQuery, filters, sort, isSortLoaded, fetchTasks]);
 
   // Initial loading state
   if (isLoadingTasks && conversations.length === 0) {
@@ -284,8 +376,27 @@ export default function TasksPage() {
             </div>
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400">
-            {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}
+            {pagination.total} {pagination.total === 1 ? 'task' : 'tasks'}
           </p>
+        </div>
+
+        {/* Search and Filters */}
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 space-y-3">
+          <TaskSearch
+            onSearchChange={handleSearchChange}
+            initialValue={searchQuery}
+            placeholder="Search tasks..."
+          />
+          <TaskFilters
+            onFilterChange={handleFilterChange}
+            initialFilters={filters}
+            tags={tags}
+          />
+          <TaskSort
+            sortBy={sort.sortBy}
+            sortOrder={sort.sortOrder}
+            onSortChange={onSortChange}
+          />
         </div>
 
         {/* Task List */}
@@ -296,10 +407,14 @@ export default function TasksPage() {
             <div className="text-center py-8">
               <ListTodo className="w-12 h-12 mx-auto text-gray-400 dark:text-gray-600 mb-3" />
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                No tasks yet
+                {searchQuery || filters.priority || filters.status || filters.tags.length > 0
+                  ? 'No tasks match your search'
+                  : 'No tasks yet'}
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
-                Ask the AI to create tasks for you
+                {searchQuery || filters.priority || filters.status || filters.tags.length > 0
+                  ? 'Try adjusting your filters'
+                  : 'Ask the AI to create tasks for you'}
               </p>
             </div>
           ) : (
