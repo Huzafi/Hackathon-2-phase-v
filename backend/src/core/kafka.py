@@ -42,7 +42,6 @@ class KafkaProducerClient:
                     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
                     key_serializer=lambda k: k.encode('utf-8') if k else None,
                     acks='all',
-                    retries=3,
                     retry_backoff_ms=100,
                     request_timeout_ms=10000,
                     connections_max_idle_ms=540000,
@@ -53,13 +52,17 @@ class KafkaProducerClient:
                 self._connection_failed = False
                 self._retry_count = 0
                 return
-            except (KafkaError, KafkaConnectionError, Exception) as e:
-                # Close the failed producer to prevent "Unclosed" warnings
+            except BaseException as e:
+                # BaseException catches CancelledError (Python 3.9+) + all other errors
+                # Always close the partially-initialized producer to prevent resource leaks
                 if producer is not None:
                     try:
                         await producer.stop()
                     except Exception:
                         pass
+                # Re-raise CancelledError so task cancellation propagates correctly
+                if isinstance(e, asyncio.CancelledError):
+                    raise
                 self._retry_count = attempt + 1
                 logger.warning(f"Kafka producer connection attempt {attempt + 1}/{self._max_retries} failed: {e}")
                 if attempt < self._max_retries - 1:
@@ -180,13 +183,17 @@ class KafkaConsumerClient:
                 self._connection_failed = False
                 self._retry_count = 0
                 return True
-            except (KafkaError, KafkaConnectionError, Exception) as e:
-                # Close the failed consumer to prevent "Unclosed AIOKafkaConsumer" warnings
+            except BaseException as e:
+                # BaseException catches CancelledError (Python 3.9+) + all other errors
+                # Always close the partially-initialized consumer to prevent resource leaks
                 if consumer is not None:
                     try:
                         await consumer.stop()
                     except Exception:
                         pass
+                # Re-raise CancelledError so task cancellation propagates correctly
+                if isinstance(e, asyncio.CancelledError):
+                    raise
                 self._retry_count = attempt + 1
                 logger.warning(f"Kafka consumer connection attempt {attempt + 1}/{self._max_retries} failed: {e}")
                 if attempt < self._max_retries - 1:
