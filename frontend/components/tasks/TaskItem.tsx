@@ -9,6 +9,9 @@ import { Task } from '@/types/entities';
 import { toggleTaskCompletion, deleteTask } from '@/lib/api/tasks';
 import { EditTaskModal } from './EditTaskModal';
 import { Button } from '@/components/ui/Button';
+import { PriorityBadge } from '@/components/ui/PriorityBadge';
+import { DueDateBadge, isOverdue } from '@/components/ui/DueDateBadge';
+import { TagList } from '@/components/ui/TagList';
 import clsx from 'clsx';
 
 interface TaskItemProps {
@@ -61,8 +64,17 @@ export function TaskItem({ task, onTaskChange }: TaskItemProps) {
     onTaskChange();
   };
 
+  const overdue = isOverdue(task.due_date, task.completed);
+
   return (
-    <div className="bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800 p-4 hover:shadow-md transition-shadow">
+    <div
+      className={clsx(
+        'bg-white dark:bg-zinc-900 rounded-lg border p-4 transition-shadow hover:shadow-md',
+        overdue && !task.completed
+          ? 'border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/10'
+          : 'border-zinc-200 dark:border-zinc-800'
+      )}
+    >
       <div className="flex items-start gap-3">
         {/* Checkbox */}
         <button
@@ -119,6 +131,23 @@ export function TaskItem({ task, onTaskChange }: TaskItemProps) {
               {task.description}
             </p>
           )}
+          
+          {/* Metadata: Priority, Due Date, Tags */}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {/* Priority Badge */}
+            <PriorityBadge priority={task.priority} size="sm" />
+            
+            {/* Due Date Badge */}
+            {task.due_date && (
+              <DueDateBadge dueDate={task.due_date} completed={task.completed} size="sm" />
+            )}
+            
+            {/* Tags */}
+            {task.tags && task.tags.length > 0 && (
+              <TagList tags={task.tags} maxDisplay={3} size="sm" />
+            )}
+          </div>
+          
           <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-500">
             Created {new Date(task.created_at).toLocaleDateString()}
           </p>

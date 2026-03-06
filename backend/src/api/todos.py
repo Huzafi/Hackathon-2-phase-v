@@ -1,83 +1,116 @@
 """Todo API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlmodel import Session
 from datetime import datetime
+from typing import Optional, List
+import asyncio
+
 from ..core.database import get_session
 from ..dependencies.auth import get_current_user
 from ..models.user import User
-from ..models.todo import Todo
-from ..schemas.todo import TodoCreate, TodoUpdate, TodoPatch, TodoResponse
+from ..models.todo import PriorityEnum
+from ..schemas.todo import TodoCreate, TodoUpdate, TodoPatch, TodoResponse, TodoListResponse
+from ..services.task_service import get_task_service, TaskService
+from ..services.search_service import get_search_service
 
 
 router = APIRouter(prefix="/api/todos", tags=["Todos"])
 
 
-def verify_todo_ownership(todo: Todo, current_user: User):
-    """
-    Verify that the current user owns the todo.
-
-    Raises:
-        HTTPException: 403 if user doesn't own the todo
-    """
-    if todo.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this todo"
-        )
-
-
 @router.post("", response_model=TodoResponse, status_code=status.HTTP_201_CREATED)
-def create_todo(
+async def create_todo(
     todo_data: TodoCreate,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
     """
     Create a new todo for the authenticated user.
-
+    
     - Title is required (1-200 characters)
     - Description is optional (max 1000 characters)
+    - Due date is optional
+    - Priority defaults to 'medium' (high/medium/low)
+    - Tag IDs are optional (must belong to user)
     - User ID is automatically set from JWT token
-    - Returns created todo with timestamps
+    - Returns created todo with timestamps and tags
     """
-    # Validate title is not empty or whitespace
-    if not todo_data.title.strip():
+    task_service = get_task_service(session)
+    
+    try:
+        task = await task_service.create_task(
+            title=todo_data.title,
+            user_id=current_user.id,
+            description=todo_data.description,
+            due_date=todo_data.due_date,
+            priority=todo_data.priority,
+            tag_ids=todo_data.tag_ids
+        )
+        return TodoResponse.model_validate(task)
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Title cannot be empty or whitespace"
+            detail=str(e)
         )
 
-    # Create new todo with user_id from authenticated user
-    new_todo = Todo(
-        title=todo_data.title,
-        description=todo_data.description,
-        user_id=current_user.id
-    )
 
-    session.add(new_todo)
-    session.commit()
-    session.refresh(new_todo)
-
-    return TodoResponse.model_validate(new_todo)
-
-
-@router.get("", response_model=list[TodoResponse])
+@router.get("", response_model=TodoListResponse)
 def list_todos(
     current_user: User = Depends(get_current_user),
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    priority: Optional[PriorityEnum] = Query(None, description="Filter by priority"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status (completed, incomplete, overdue)"),
+    tags: Optional[str] = Query(None, description="Filter by tag IDs (comma-separated)"),
+    due_date_from: Optional[datetime] = Query(None, description="Filter tasks due on or after this date"),
+    due_date_to: Optional[datetime] = Query(None, description="Filter tasks due on or before this date"),
+    q: Optional[str] = Query(None, description="Search keyword"),
+    sort_by: str = Query("created_at", description="Sort field (due_date, priority, created_at, title)"),
+    sort_order: str = Query("desc", description="Sort order (asc, desc)"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=100, description="Items per page")
 ):
     """
-    List all todos for the authenticated user.
-
-    - Returns todos in reverse chronological order (newest first)
+    List all todos for the authenticated user with filters, search, and pagination.
+    
+    - Returns todos in reverse chronological order by default
+    - Supports filtering by priority, status, tags, due date range
+    - Supports search by keyword in title/description
+    - Supports sorting by due_date, priority, created_at, title
     - Only returns todos belonging to the authenticated user
     - User isolation enforced at query level
     """
-    # CRITICAL: Always filter by current_user.id
-    statement = select(Todo).where(Todo.user_id == current_user.id).order_by(Todo.created_at.desc())
-    todos = session.exec(statement).all()
-
-    return [TodoResponse.model_validate(todo) for todo in todos]
+    task_service = get_task_service(session)
+    
+    # Parse tag IDs
+    tag_ids = None
+    if tags:
+        try:
+            tag_ids = [int(id.strip()) for id in tags.split(",")]
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid tag IDs. Use comma-separated integers."
+            )
+    
+    result = task_service.list_tasks(
+        user_id=current_user.id,
+        priority=priority,
+        status=status_filter,
+        tag_ids=tag_ids,
+        due_date_from=due_date_from,
+        due_date_to=due_date_to,
+        search_query=q,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page=page,
+        limit=limit
+    )
+    
+    return TodoListResponse(
+        tasks=[TodoResponse.model_validate(task) for task in result["tasks"]],
+        total=result["total"],
+        page=result["page"],
+        limit=result["limit"]
+    )
 
 
 @router.get("/{todo_id}", response_model=TodoResponse)
@@ -88,27 +121,28 @@ def get_todo(
 ):
     """
     Get a specific todo by ID.
-
+    
     - Requires authentication
     - Verifies ownership (403 if not owned by user)
     - Returns 404 if todo doesn't exist
+    - Includes tags in response
     """
-    todo = session.get(Todo, todo_id)
-
-    if not todo:
+    task_service = get_task_service(session)
+    
+    try:
+        task = task_service.get_task(todo_id, current_user.id)
+        return TodoResponse.model_validate(task)
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Todo with id {todo_id} not found"
         )
 
-    # Verify ownership
-    verify_todo_ownership(todo, current_user)
-
-    return TodoResponse.model_validate(todo)
-
 
 @router.put("/{todo_id}", response_model=TodoResponse)
-def update_todo(
+async def update_todo(
     todo_id: int,
     todo_data: TodoUpdate,
     current_user: User = Depends(get_current_user),
@@ -116,46 +150,43 @@ def update_todo(
 ):
     """
     Update a todo (full update - replaces all fields).
-
+    
     - Requires authentication
     - Verifies ownership (403 if not owned by user)
     - Updates all provided fields
+    - Tag IDs replace existing tags
     - Automatically updates updated_at timestamp
     """
-    todo = session.get(Todo, todo_id)
-
-    if not todo:
+    task_service = get_task_service(session)
+    
+    try:
+        task = await task_service.update_task(
+            task_id=todo_id,
+            user_id=current_user.id,
+            title=todo_data.title,
+            description=todo_data.description,
+            due_date=todo_data.due_date,
+            priority=todo_data.priority,
+            tag_ids=todo_data.tag_ids,
+            is_completed=todo_data.is_completed
+        )
+        return TodoResponse.model_validate(task)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Todo with id {todo_id} not found"
         )
 
-    # Verify ownership
-    verify_todo_ownership(todo, current_user)
-
-    # Validate title is not empty
-    if not todo_data.title.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Title cannot be empty or whitespace"
-        )
-
-    # Update fields
-    todo.title = todo_data.title
-    todo.description = todo_data.description
-    if todo_data.is_completed is not None:
-        todo.is_completed = todo_data.is_completed
-    todo.updated_at = datetime.utcnow()
-
-    session.add(todo)
-    session.commit()
-    session.refresh(todo)
-
-    return TodoResponse.model_validate(todo)
-
 
 @router.patch("/{todo_id}", response_model=TodoResponse)
-def patch_todo(
+async def patch_todo(
     todo_id: int,
     todo_data: TodoPatch,
     current_user: User = Depends(get_current_user),
@@ -163,73 +194,65 @@ def patch_todo(
 ):
     """
     Partially update a todo (only updates provided fields).
-
+    
     - Requires authentication
     - Verifies ownership (403 if not owned by user)
     - Updates only the fields provided in request
+    - Tag IDs replace existing tags if provided
     - Automatically updates updated_at timestamp
     """
-    todo = session.get(Todo, todo_id)
-
-    if not todo:
+    task_service = get_task_service(session)
+    
+    try:
+        task = await task_service.update_task(
+            task_id=todo_id,
+            user_id=current_user.id,
+            title=todo_data.title,
+            description=todo_data.description,
+            due_date=todo_data.due_date,
+            priority=todo_data.priority,
+            tag_ids=todo_data.tag_ids,
+            is_completed=todo_data.is_completed
+        )
+        return TodoResponse.model_validate(task)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Todo with id {todo_id} not found"
         )
 
-    # Verify ownership
-    verify_todo_ownership(todo, current_user)
-
-    # Update only provided fields
-    if todo_data.title is not None:
-        if not todo_data.title.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Title cannot be empty or whitespace"
-            )
-        todo.title = todo_data.title
-
-    if todo_data.description is not None:
-        todo.description = todo_data.description
-
-    if todo_data.is_completed is not None:
-        todo.is_completed = todo_data.is_completed
-
-    todo.updated_at = datetime.utcnow()
-
-    session.add(todo)
-    session.commit()
-    session.refresh(todo)
-
-    return TodoResponse.model_validate(todo)
-
 
 @router.delete("/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_todo(
+async def delete_todo(
     todo_id: int,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
     """
     Permanently delete a todo.
-
+    
     - Requires authentication
     - Verifies ownership (403 if not owned by user)
     - Hard delete (cannot be recovered)
     - Returns 204 No Content on success
     """
-    todo = session.get(Todo, todo_id)
-
-    if not todo:
+    task_service = get_task_service(session)
+    
+    try:
+        await task_service.delete_task(todo_id, current_user.id)
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Todo with id {todo_id} not found"
         )
-
-    # Verify ownership
-    verify_todo_ownership(todo, current_user)
-
-    session.delete(todo)
-    session.commit()
-
+    
     return None

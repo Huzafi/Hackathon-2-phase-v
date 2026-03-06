@@ -1,0 +1,568 @@
+# Extended Tasks API Contract
+
+**Version**: 1.0.0
+**Date**: 2026-02-23
+**Feature**: 005-advanced-features-kafka-dapr
+
+---
+
+## Overview
+
+This document defines the extended Tasks API with support for due dates, priorities, tags, search, filter, and sort functionality. All endpoints require JWT authentication.
+
+---
+
+## Base URL
+
+```
+/api/tasks
+```
+
+---
+
+## Authentication
+
+All endpoints require JWT token in Authorization header:
+
+```
+Authorization: Bearer <jwt_token>
+```
+
+---
+
+## Endpoints
+
+### Create Task (Extended)
+
+**POST** `/api/tasks`
+
+Create a new task with optional due date, priority, and tags.
+
+**Request Body**:
+```json
+{
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report",
+  "due_date": "2026-02-28T23:59:59Z",
+  "priority": "high",
+  "tag_ids": [1, 5]
+}
+```
+
+**Response** (201 Created):
+```json
+{
+  "id": 123,
+  "user_id": 1,
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report",
+  "completed": false,
+  "due_date": "2026-02-28T23:59:59Z",
+  "priority": "high",
+  "tags": [
+    {"id": 1, "name": "work", "color": "#3B82F6"},
+    {"id": 5, "name": "urgent", "color": "#EF4444"}
+  ],
+  "created_at": "2026-02-23T10:00:00Z",
+  "updated_at": "2026-02-23T10:00:00Z"
+}
+```
+
+**Error Responses**:
+- 400 Bad Request: Invalid priority, due_date in past, title too long
+- 401 Unauthorized: Missing or invalid JWT
+- 422 Validation Error: Missing required fields
+
+---
+
+### Get Task (Extended)
+
+**GET** `/api/tasks/{task_id}`
+
+Retrieve a specific task with full details including tags and reminders.
+
+**Response** (200 OK):
+```json
+{
+  "id": 123,
+  "user_id": 1,
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report",
+  "completed": false,
+  "due_date": "2026-02-28T23:59:59Z",
+  "priority": "high",
+  "tags": [
+    {"id": 1, "name": "work", "color": "#3B82F6"}
+  ],
+  "reminders": [
+    {
+      "id": 1,
+      "trigger_time": "2026-02-28T09:00:00Z",
+      "delivered": false
+    }
+  ],
+  "recurrence_rule": null,
+  "created_at": "2026-02-23T10:00:00Z",
+  "updated_at": "2026-02-23T10:00:00Z"
+}
+```
+
+**Error Responses**:
+- 404 Not Found: Task not found or doesn't belong to user
+- 401 Unauthorized: Missing or invalid JWT
+
+---
+
+### Update Task (Extended)
+
+**PUT** `/api/tasks/{task_id}`
+
+Full update of a task. All fields can be modified.
+
+**Request Body**:
+```json
+{
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report and send to manager",
+  "due_date": "2026-02-27T23:59:59Z",
+  "priority": "high",
+  "tag_ids": [1, 5, 8]
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 123,
+  "user_id": 1,
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report and send to manager",
+  "completed": false,
+  "due_date": "2026-02-27T23:59:59Z",
+  "priority": "high",
+  "tags": [
+    {"id": 1, "name": "work", "color": "#3B82F6"},
+    {"id": 5, "name": "urgent", "color": "#EF4444"},
+    {"id": 8, "name": "finance", "color": "#10B981"}
+  ],
+  "created_at": "2026-02-23T10:00:00Z",
+  "updated_at": "2026-02-23T14:30:00Z"
+}
+```
+
+---
+
+### Partial Update Task (Extended)
+
+**PATCH** `/api/tasks/{task_id}`
+
+Partial update - only provided fields are modified.
+
+**Request Body** (example - update only priority):
+```json
+{
+  "priority": "medium"
+}
+```
+
+**Request Body** (example - update only tags):
+```json
+{
+  "tag_ids": [1, 8]
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 123,
+  "user_id": 1,
+  "title": "Complete quarterly report",
+  "description": "Finish Q1 financial report and send to manager",
+  "completed": false,
+  "due_date": "2026-02-27T23:59:59Z",
+  "priority": "medium",
+  "tags": [
+    {"id": 1, "name": "work", "color": "#3B82F6"},
+    {"id": 8, "name": "finance", "color": "#10B981"}
+  ],
+  "created_at": "2026-02-23T10:00:00Z",
+  "updated_at": "2026-02-23T15:00:00Z"
+}
+```
+
+---
+
+### Delete Task
+
+**DELETE** `/api/tasks/{task_id}`
+
+Delete a task. If task has recurring instances, behavior depends on query parameter.
+
+**Query Parameters**:
+- `delete_future` (boolean, optional): If true and task is recurring, delete all future instances. Default: false.
+
+**Response** (204 No Content):
+No response body.
+
+**Error Responses**:
+- 404 Not Found: Task not found
+- 401 Unauthorized: Missing or invalid JWT
+
+---
+
+### List Tasks with Filters and Sort
+
+**GET** `/api/tasks`
+
+List all tasks for authenticated user with optional search, filters, and sorting.
+
+**Query Parameters**:
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| q | string | Search keyword (title and description) | `?q=report` |
+| priority | enum | Filter by priority (high, medium, low) | `?priority=high` |
+| status | enum | Filter by status (completed, incomplete, overdue) | `?status=overdue` |
+| tags | array | Filter by tag IDs (comma-separated) | `?tags=1,5,8` |
+| due_date_from | datetime | Filter tasks due on or after this date | `?due_date_from=2026-02-01` |
+| due_date_to | datetime | Filter tasks due on or before this date | `?due_date_to=2026-02-28` |
+| sort_by | enum | Sort field (due_date, priority, created_at, title) | `?sort_by=due_date` |
+| sort_order | enum | Sort order (asc, desc) | `?sort_order=asc` |
+| page | integer | Page number (default: 1) | `?page=2` |
+| limit | integer | Items per page (default: 50, max: 100) | `?limit=20` |
+
+**Response** (200 OK):
+```json
+{
+  "tasks": [
+    {
+      "id": 123,
+      "title": "Complete quarterly report",
+      "description": "Finish Q1 financial report",
+      "completed": false,
+      "due_date": "2026-02-28T23:59:59Z",
+      "priority": "high",
+      "tags": [{"id": 1, "name": "work", "color": "#3B82F6"}],
+      "created_at": "2026-02-23T10:00:00Z",
+      "updated_at": "2026-02-23T10:00:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "total": 127,
+    "total_pages": 3
+  }
+}
+```
+
+**Priority Sort Order**:
+- `sort_order=asc`: low → medium → high
+- `sort_order=desc`: high → medium → low
+
+---
+
+## Search and Filter Behavior
+
+### Search (q parameter)
+
+- Case-insensitive search in title and description
+- Supports partial matches (e.g., `?q=rep` matches "report")
+- Uses PostgreSQL full-text search with ranking
+- Results ordered by relevance when search is active
+
+### Filter Combinations
+
+Multiple filters use AND logic:
+```
+GET /api/tasks?priority=high&status=overdue&tags=1,5
+```
+Returns: High priority AND overdue AND has tag 1 OR 5
+
+### Status Filter Values
+
+- `completed`: Tasks with completed=true
+- `incomplete`: Tasks with completed=false
+- `overdue`: Tasks with completed=false AND due_date < now()
+
+---
+
+## Validation Rules
+
+### Title
+- Required
+- 1-200 characters
+- Cannot be empty or whitespace only
+
+### Description
+- Optional
+- 0-1000 characters
+
+### Due Date
+- Optional
+- Must be valid ISO 8601 datetime
+- Cannot be in the past (returns 400 error)
+- Time component defaults to 23:59:59 if only date provided
+
+### Priority
+- Required for creation (default: medium if not provided)
+- Must be one of: high, medium, low
+
+### Tags
+- Optional
+- Tag IDs must exist and belong to user
+- Maximum 10 tags per task
+
+---
+
+## Error Response Format
+
+```json
+{
+  "detail": "Error message",
+  "errors": [
+    {
+      "field": "due_date",
+      "message": "Due date cannot be in the past"
+    }
+  ]
+}
+```
+
+**Common Error Codes**:
+- 400 Bad Request: Validation error (past due date, invalid priority)
+- 401 Unauthorized: Missing or invalid JWT
+- 403 Forbidden: Task belongs to another user
+- 404 Not Found: Task or tag not found
+- 422 Validation Error: Schema validation failed
+
+---
+
+## Rate Limiting
+
+- 100 requests per minute per user
+- 1000 requests per hour per user
+
+**Rate Limit Headers**:
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1645632000
+```
+
+**Response** (429 Too Many Requests):
+```json
+{
+  "detail": "Rate limit exceeded. Try again in 60 seconds."
+}
+```
+
+---
+
+## Examples
+
+### Create High Priority Task with Due Date and Tags
+
+```bash
+curl -X POST http://localhost:8000/api/tasks \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Submit tax return",
+    "description": "File 2025 tax return",
+    "due_date": "2026-04-15T23:59:59Z",
+    "priority": "high",
+    "tag_ids": [1, 5]
+  }'
+```
+
+### Search for Overdue High Priority Tasks
+
+```bash
+curl -X GET "http://localhost:8000/api/tasks?priority=high&status=overdue&sort_by=due_date&sort_order=asc" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Filter Tasks by Tags
+
+```bash
+curl -X GET "http://localhost:8000/api/tasks?tags=1,5,8&sort_by=created_at&sort_order=desc" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+---
+
+## OpenAPI Schema
+
+```yaml
+paths:
+  /api/tasks:
+    get:
+      summary: List tasks with filters and sort
+      tags:
+        - Tasks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Search keyword
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [high, medium, low]
+          description: Filter by priority
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [completed, incomplete, overdue]
+          description: Filter by status
+        - name: tags
+          in: query
+          schema:
+            type: array
+            items:
+              type: integer
+          description: Filter by tag IDs
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [due_date, priority, created_at, title]
+          description: Sort field
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+          description: Sort order
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+    
+    post:
+      summary: Create a new task
+      tags:
+        - Tasks
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+
+components:
+  schemas:
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        due_date:
+          type: string
+          format: date-time
+        priority:
+          type: string
+          enum: [high, medium, low]
+          default: medium
+        tag_ids:
+          type: array
+          items:
+            type: integer
+          maxItems: 10
+    
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        completed:
+          type: boolean
+        due_date:
+          type: string
+          format: date-time
+        priority:
+          type: string
+          enum: [high, medium, low]
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    
+    Tag:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+    
+    TaskListResponse:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+```
+
+---
+
+## Next Steps
+
+1. Implement endpoint handlers in `backend/src/api/todos.py`
+2. Create Pydantic schemas in `backend/src/schemas/todo.py`
+3. Update SQLModel definitions in `backend/src/models/todo.py`
+4. Add integration tests for new endpoints
+5. Update frontend API client in `frontend/lib/api/tasks.ts`

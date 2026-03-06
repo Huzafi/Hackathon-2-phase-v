@@ -1,0 +1,18 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: kafka-binding
+spec:
+  type: bindings.kafka
+  version: v1
+  metadata:
+  - name: brokers
+    value: kafka:29092
+  - name: authType
+    value: "none"
+  - name: consumerGroup
+    value: dapr-binding-group
+  - name: direction
+    value: "input,output"
+  - name: topics
+    value: task-events,reminder-events,message-events
